@@ -103,9 +103,11 @@ bot.start(async (ctx) => {
       telegramLinkedAt: new Date().toISOString(),
     });
 
-    const username = userSnap.data()?.username || '';
+    const userData = userSnap.data();
+    const username = userData?.username || '';
+    const balance = Number(userData?.earnings || 0).toFixed(2);
     await ctx.reply(
-      `✅ تم ربط حسابك بنجاح${username ? '، ' + username : ''}!\n\nمن الآن فصاعداً، راح توصلك كل إشعاراتك (مهام، إيداع، سحب، عمولات، وغيرها) هنا فورًا.${OXLO_SIGNATURE}`
+      `✅ تم ربط حسابك بنجاح${username ? '، ' + username : ''}!\n\n💰 رصيدك الحالي: ${balance} USDT\n\nمن الآن فصاعداً، راح توصلك كل إشعاراتك (مهام، إيداع، سحب، عمولات، وغيرها) هنا فورًا.${OXLO_SIGNATURE}`
     );
   } catch (err) {
     console.error('start handler error:', err);
@@ -116,6 +118,74 @@ bot.start(async (ctx) => {
 bot.catch((err) => {
   console.error('Telegraf error:', err);
 });
+
+// ============================================================
+// عرض الرصيد: أمر /balance، أو ببساطة كتابة "رصيد" أو "رصيدي"
+// يعرض رصيد كل الحسابات المربوطة بنفس محادثة تيليجرام هذي —
+// قراءة فقط، بدون أي تعديل على قاعدة البيانات.
+// ============================================================
+async function handleBalance(ctx: any) {
+  const chatId = String(ctx.chat.id);
+  try {
+    const snap = await db.collection('users').where('telegramChatId', '==', chatId).get();
+    if (snap.empty) {
+      await ctx.reply('لا يوجد حساب مربوط بهذا الرقم بعد. افتح رابط "ربط Telegram" من داخل تطبيق OXLO أول.');
+      return;
+    }
+
+    const lines = snap.docs.map((d) => {
+      const u = d.data();
+      const name = u.username || u.phone || d.id;
+      const balance = Number(u.earnings || 0).toFixed(2);
+      return `👤 ${name}\n💰 رصيدك الحالي: ${balance} USDT`;
+    });
+
+    await ctx.reply(`${lines.join('\n\n')}${OXLO_SIGNATURE}`);
+  } catch (err) {
+    console.error('balance command error:', err);
+    await ctx.reply('تعذّر جلب الرصيد حاليًا، حاول بعد قليل.');
+  }
+}
+bot.command('balance', handleBalance);
+bot.hears(['رصيد', 'رصيدي', 'الرصيد'], handleBalance);
+
+// ============================================================
+// إلغاء الربط: أمر /unlink، أو كتابة "الغاء الربط" / "فك الربط"
+// يمسح telegramChatId من كل حساب مربوط بهذي المحادثة. بعدها
+// شاشة الربط الإجبارية بالموقع ترجع تلقائيًا (لأنها أصلاً تتفعّل
+// كل ما يكون هذا الحقل فاضيًا) — بدون أي تعديل إضافي مطلوب.
+// ============================================================
+async function handleUnlink(ctx: any) {
+  const chatId = String(ctx.chat.id);
+  try {
+    const snap = await db.collection('users').where('telegramChatId', '==', chatId).get();
+    if (snap.empty) {
+      await ctx.reply('ما عندك أي حساب مربوط حاليًا.');
+      return;
+    }
+
+    const names = snap.docs.map((d) => d.data()?.username || d.data()?.phone || d.id);
+
+    const batch = db.batch();
+    snap.docs.forEach((d) => {
+      batch.update(d.ref, {
+        telegramChatId: admin.firestore.FieldValue.delete(),
+        telegramUsername: admin.firestore.FieldValue.delete(),
+        telegramLinkedAt: admin.firestore.FieldValue.delete(),
+      });
+    });
+    await batch.commit();
+
+    await ctx.reply(
+      `✅ تم إلغاء الربط لـ: ${names.join('، ')}\n\nلن تصلك إشعارات بعد الآن. عند فتح تطبيق OXLO مرة ثانية، بيُطلب منك ربط حساب Telegram من جديد.`
+    );
+  } catch (err) {
+    console.error('unlink command error:', err);
+    await ctx.reply('تعذّر إلغاء الربط حاليًا، حاول بعد قليل.');
+  }
+}
+bot.command('unlink', handleUnlink);
+bot.hears(['الغاء الربط', 'إلغاء الربط', 'فك الربط'], handleUnlink);
 
 // ============================================================
 // أمر /stats: يعرض عدد زوار البوت وعدد الحسابات المربوطة فعليًا.
