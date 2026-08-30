@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import * as admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 
 // ============================================================
 // ⚠️ هذا البوت لا يقرأ ولا يعدّل ولا يحذف أي شي من كود منصتك القديم.
@@ -13,11 +14,16 @@ const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 if (!serviceAccountJson) {
   throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON غير موجود في متغيرات البيئة');
 }
-admin.initializeApp({
+const app = admin.initializeApp({
   credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
 });
 
-const db = admin.firestore();
+// ⚠️ مهم جدًا: قاعدة بياناتك اسمها "arbah-main" وليست القاعدة
+// الافتراضية — لازم نحدد اسمها صراحة، وإلا يتصل Firebase Admin
+// بقاعدة فاضية تمامًا ويفشل كل استعلام بصمت (هذا كان سبب فشل
+// الربط بالتجربة السابقة).
+const FIRESTORE_DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || 'arbah-main';
+const db = getFirestore(app, FIRESTORE_DATABASE_ID);
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!BOT_TOKEN) {
