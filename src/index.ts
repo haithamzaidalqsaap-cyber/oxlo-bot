@@ -30,6 +30,9 @@ if (!BOT_TOKEN) {
   throw new Error('TELEGRAM_BOT_TOKEN غير موجود في متغيرات البيئة');
 }
 
+// رابط الموقع الأساسي — يُستخدم لبناء روابط الإحالة (?ref=الكود)
+const SITE_BASE_URL = process.env.SITE_BASE_URL || 'https://oxlo.store';
+
 const bot = new Telegraf(BOT_TOKEN);
 const OXLO_SIGNATURE = '\n\n— OXLO —';
 
@@ -186,6 +189,70 @@ async function handleUnlink(ctx: any) {
 }
 bot.command('unlink', handleUnlink);
 bot.hears(['الغاء الربط', 'إلغاء الربط', 'فك الربط'], handleUnlink);
+
+// ============================================================
+// شحن سريع: أمر /deposit، أو كتابة "شحن" / "ايداع" / "الشحن"
+// يعرض عناوين الإيداع لكل الشبكات المتاحة بالمنصة مباشرة —
+// قراءة فقط من settings/general، بدون أي تعديل.
+// ============================================================
+async function handleDeposit(ctx: any) {
+  try {
+    const snap = await db.collection('settings').doc('general').get();
+    const s = snap.data() || {};
+
+    const lines = [
+      s.rechargeAddressTRC20 ? `🟢 <b>USDT (TRC20)</b>\n<code>${s.rechargeAddressTRC20}</code>` : '',
+      s.rechargeAddressBEP20 ? `🟡 <b>USDT (BEP20)</b>\n<code>${s.rechargeAddressBEP20}</code>` : '',
+      s.rechargeAddress ? `🟣 <b>USDT (Polygon)</b>\n<code>${s.rechargeAddress}</code>` : '',
+    ].filter(Boolean);
+
+    if (lines.length === 0) {
+      await ctx.reply('عناوين الإيداع غير متوفرة حاليًا، حاول لاحقًا أو تواصل مع الدعم.');
+      return;
+    }
+
+    await ctx.reply(
+      `💳 <b>عناوين الإيداع المتاحة</b>\n\n${lines.join('\n\n')}\n\n⚠️ تأكد من اختيار نفس الشبكة الصحيحة عند التحويل، وارفع صورة الإثبات داخل التطبيق بعد التحويل.${OXLO_SIGNATURE}`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error('deposit command error:', err);
+    await ctx.reply('تعذّر جلب عناوين الإيداع حاليًا.');
+  }
+}
+bot.command('deposit', handleDeposit);
+bot.hears(['شحن', 'ايداع', 'إيداع', 'الشحن', 'الإيداع'], handleDeposit);
+
+// ============================================================
+// رابط الإحالة: أمر /invite، أو كتابة "رابط الاحالة" / "دعوة"
+// يعرض رابط دعوة العضو الجاهز للمشاركة — لكل حساب مربوط بهذي
+// المحادثة على حدة.
+// ============================================================
+async function handleInvite(ctx: any) {
+  const chatId = String(ctx.chat.id);
+  try {
+    const snap = await db.collection('users').where('telegramChatId', '==', chatId).get();
+    if (snap.empty) {
+      await ctx.reply('لا يوجد حساب مربوط بعد. اربط حسابك أول من داخل تطبيق OXLO.');
+      return;
+    }
+
+    const lines = snap.docs.map((d) => {
+      const u = d.data();
+      const name = u.username || u.phone || d.id;
+      const code = u.inviteCode;
+      if (!code) return `👤 ${name}\n(ما عنده كود دعوة بعد)`;
+      return `👤 ${name}\n🔗 ${SITE_BASE_URL}/?ref=${code}`;
+    });
+
+    await ctx.reply(`${lines.join('\n\n')}${OXLO_SIGNATURE}`);
+  } catch (err) {
+    console.error('invite command error:', err);
+    await ctx.reply('تعذّر جلب رابط الإحالة حاليًا.');
+  }
+}
+bot.command('invite', handleInvite);
+bot.hears(['رابط الاحالة', 'رابط الإحالة', 'دعوة', 'رابط دعوتي'], handleInvite);
 
 // ============================================================
 // أمر /stats: يعرض عدد زوار البوت وعدد الحسابات المربوطة فعليًا.
