@@ -33,10 +33,29 @@ if (!BOT_TOKEN) {
 const bot = new Telegraf(BOT_TOKEN);
 const OXLO_SIGNATURE = '\n\n— OXLO —';
 
+// معرّف تيليجرام الشخصي بتاعك (Chat ID) — يحدد مين يقدر يستخدم أمر
+// /stats. لو تركته فاضي، أي شخص يقدر يشوف العداد (مو خطير جدًا لكن
+// الأفضل تقييده). احصل عليه بسهولة: كلّم @userinfobot بتيليجرام
+// وبيرد عليك برقمك مباشرة.
+const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '';
+
 // وقت إقلاع البوت — نستخدمه لتجاهل كل الإشعارات القديمة الموجودة
 // أصلاً بقاعدة البيانات عند أول تشغيل، ونرسل فقط ما هو جديد فعلاً
 // من هذه اللحظة فصاعدًا.
 const BOOT_TIME = Date.now();
+
+// تسجيل كل شخص فريد فتح محادثة مع البوت (حتى لو ما أكمل الربط) —
+// مجموعة منفصلة تمامًا، بس لعدّ الزوار، ما تتقاطع مع بيانات المنصة.
+async function recordVisitor(chatId: string, tgUsername: string) {
+  const ref = db.collection('bot_visitors').doc(chatId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    await ref.set({
+      telegramUsername: tgUsername,
+      firstSeenAt: new Date().toISOString(),
+    });
+  }
+}
 
 // ============================================================
 // 1) ربط الحساب: /start <رقم الهاتف بدون +>
@@ -48,7 +67,18 @@ bot.start(async (ctx) => {
   const chatId = String(ctx.chat.id);
   const tgUsername = ctx.from?.username ? `@${ctx.from.username}` : '';
 
+  recordVisitor(chatId, tgUsername).catch(() => {});
+
   if (!payload) {
+    // تحقق: هل هذا الشات مربوط بحساب (أو أكثر) أصلاً؟
+    const linkedSnap = await db.collection('users').where('telegramChatId', '==', chatId).get();
+    if (!linkedSnap.empty) {
+      const names = linkedSnap.docs
+        .map((d) => d.data()?.username || d.data()?.phone || d.id)
+        .join('، ');
+      await ctx.reply(`✅ أنت مربوط أصلاً بـ: ${names}\n\nراح توصلك إشعاراتك هنا تلقائيًا — ما تحتاج تسوي شي إضافي.`);
+      return;
+    }
     await ctx.reply('مرحباً بك في بوت OXLO 👋\nلربط حسابك، افتح هذا البوت من داخل تطبيق OXLO عبر زر "ربط Telegram".');
     return;
   }
@@ -88,6 +118,33 @@ bot.catch((err) => {
 });
 
 // ============================================================
+// أمر /stats: يعرض عدد زوار البوت وعدد الحسابات المربوطة فعليًا.
+// محصور على ADMIN_TELEGRAM_ID فقط.
+// ============================================================
+bot.command('stats', async (ctx) => {
+  const senderId = String(ctx.from?.id || '');
+  if (!ADMIN_TELEGRAM_ID || senderId !== ADMIN_TELEGRAM_ID) {
+    return; // تجاهل تام لأي شخص غير مصرّح له — بدون أي رد يفضح وجود الأمر
+  }
+
+  try {
+    const [visitorsSnap, linkedSnap] = await Promise.all([
+      db.collection('bot_visitors').count().get(),
+      db.collection('users').where('telegramChatId', '!=', null).count().get(),
+    ]);
+
+    await ctx.reply(
+      `📊 إحصائيات بوت OXLO\n\n` +
+      `👥 إجمالي من فتح البوت: ${visitorsSnap.data().count}\n` +
+      `🔗 حسابات مربوطة فعليًا: ${linkedSnap.data().count}`
+    );
+  } catch (err) {
+    console.error('stats command error:', err);
+    await ctx.reply('تعذّر جلب الإحصائيات حاليًا.');
+  }
+});
+
+// ============================================================
 // 2) مرسِل الإشعارات: يستمع لمجموعة "notifications" فقط (قراءة بحتة)
 //
 //    كل عملية بمنصتك (إتمام مهمة، إيداع، سحب، دعم ترقية، عمولة
@@ -117,10 +174,19 @@ db.collection('notifications').onSnapshot(
       try {
         const userSnap = await db.collection('users').doc(target).get();
         if (!userSnap.exists) return;
-        const chatId = userSnap.data()?.telegramChatId;
+        const userData = userSnap.data();
+        const chatId = userData?.telegramChatId;
         if (!chatId) return; // العضو لسا ما ربط حسابه بتيليجرام
 
-        await bot.telegram.sendMessage(chatId, `${message}${OXLO_SIGNATURE}`);
+        // لو نفس رقم تيليجرام مربوط بأكثر من حساب بالمنصة (شخص واحد
+        // عنده أكثر من حساب)، نوضح اسم/رقم صاحب الحساب أول كل رسالة
+        // حتى ما يصير لخبطة بين الحسابات.
+        const ownerLabel = userData?.username || userData?.phone || target;
+        const header = `👤 <b>الحساب: ${ownerLabel}</b>\n\n`;
+
+        await bot.telegram.sendMessage(chatId, `${header}${message}${OXLO_SIGNATURE}`, {
+          parse_mode: 'HTML',
+        });
       } catch (err) {
         console.error('فشل إرسال إشعار تيليجرام:', err);
       }
