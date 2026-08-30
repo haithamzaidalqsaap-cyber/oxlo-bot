@@ -128,15 +128,34 @@ bot.command('stats', async (ctx) => {
   }
 
   try {
-    const [visitorsSnap, linkedSnap] = await Promise.all([
+    const [visitorsSnap, linkedUsersSnap] = await Promise.all([
       db.collection('bot_visitors').count().get(),
-      db.collection('users').where('telegramChatId', '!=', null).count().get(),
+      db.collection('users').where('telegramChatId', '!=', null).get(),
     ]);
+
+    const totalVisitors = visitorsSnap.data().count;
+    const linkedDocs = linkedUsersSnap.docs;
+
+    let listText = '';
+    if (linkedDocs.length > 0) {
+      listText = linkedDocs
+        .map((d, i) => {
+          const u = d.data();
+          const name = u.username || '—';
+          const phone = u.phone || d.id;
+          const tg = u.telegramUsername || '—';
+          return `${i + 1}. ${name}\n   📱 ${phone}\n   💬 ${tg}`;
+        })
+        .join('\n\n');
+    } else {
+      listText = 'لا يوجد حسابات مربوطة بعد.';
+    }
 
     await ctx.reply(
       `📊 إحصائيات بوت OXLO\n\n` +
-      `👥 إجمالي من فتح البوت: ${visitorsSnap.data().count}\n` +
-      `🔗 حسابات مربوطة فعليًا: ${linkedSnap.data().count}`
+      `👥 إجمالي من فتح البوت: ${totalVisitors}\n` +
+      `🔗 حسابات مربوطة فعليًا: ${linkedDocs.length}\n\n` +
+      `— القائمة —\n\n${listText}`
     );
   } catch (err) {
     console.error('stats command error:', err);
