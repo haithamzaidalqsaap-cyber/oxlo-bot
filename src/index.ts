@@ -1,0 +1,131 @@
+import 'dotenv/config';
+import { Telegraf } from 'telegraf';
+import * as admin from 'firebase-admin';
+
+// ============================================================
+// ⚠️ هذا البوت لا يقرأ ولا يعدّل ولا يحذف أي شي من كود منصتك القديم.
+// هو عملية Node.js منفصلة كليًا، تتصل بنفس قاعدة بيانات Firestore
+// وتقرأ منها فقط (باستثناء سطر واحد: كتابة telegramChatId عند
+// الربط داخل مستند المستخدم نفسه — لا شي غيره).
+// ============================================================
+
+const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+if (!serviceAccountJson) {
+  throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON غير موجود في متغيرات البيئة');
+}
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+});
+
+const db = admin.firestore();
+
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!BOT_TOKEN) {
+  throw new Error('TELEGRAM_BOT_TOKEN غير موجود في متغيرات البيئة');
+}
+
+const bot = new Telegraf(BOT_TOKEN);
+const OXLO_SIGNATURE = '\n\n— OXLO —';
+
+// وقت إقلاع البوت — نستخدمه لتجاهل كل الإشعارات القديمة الموجودة
+// أصلاً بقاعدة البيانات عند أول تشغيل، ونرسل فقط ما هو جديد فعلاً
+// من هذه اللحظة فصاعدًا.
+const BOOT_TIME = Date.now();
+
+// ============================================================
+// 1) ربط الحساب: /start <رقم الهاتف بدون +>
+//    (الشاشة بالموقع تفتح هذا الرابط تلقائيًا؛ لا يحتاج العضو
+//    يكتب أي شي يدويًا — فقط يضغط Start)
+// ============================================================
+bot.start(async (ctx) => {
+  const payload = (ctx.startPayload || '').trim();
+  const chatId = String(ctx.chat.id);
+  const tgUsername = ctx.from?.username ? `@${ctx.from.username}` : '';
+
+  if (!payload) {
+    await ctx.reply('مرحباً بك في بوت OXLO 👋\nلربط حسابك، افتح هذا البوت من داخل تطبيق OXLO عبر زر "ربط Telegram".');
+    return;
+  }
+
+  const phone = `+${payload.replace(/\D/g, '')}`;
+
+  try {
+    const userRef = db.collection('users').doc(phone);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      await ctx.reply('⚠️ لم يتم العثور على حساب مطابق. تأكد أنك فتحت هذا الرابط من داخل تطبيق OXLO مباشرة.');
+      return;
+    }
+
+    // التعديل الوحيد الذي يلمسه هذا البوت على قاعدة بياناتك:
+    // حقل telegramChatId (وحقلين مساعدين اختياريين) داخل مستند
+    // هذا المستخدم فقط — لا شي آخر يتغيّر بأي مستند آخر بالنظام.
+    await userRef.update({
+      telegramChatId: chatId,
+      telegramUsername: tgUsername,
+      telegramLinkedAt: new Date().toISOString(),
+    });
+
+    const username = userSnap.data()?.username || '';
+    await ctx.reply(
+      `✅ تم ربط حسابك بنجاح${username ? '، ' + username : ''}!\n\nمن الآن فصاعداً، راح توصلك كل إشعاراتك (مهام، إيداع، سحب، عمولات، وغيرها) هنا فورًا.${OXLO_SIGNATURE}`
+    );
+  } catch (err) {
+    console.error('start handler error:', err);
+    await ctx.reply('حدث خطأ أثناء الربط، حاول مرة أخرى بعد قليل.');
+  }
+});
+
+bot.catch((err) => {
+  console.error('Telegraf error:', err);
+});
+
+// ============================================================
+// 2) مرسِل الإشعارات: يستمع لمجموعة "notifications" فقط (قراءة بحتة)
+//
+//    كل عملية بمنصتك (إتمام مهمة، إيداع، سحب، دعم ترقية، عمولة
+//    إحالة، انضمام عضو جديد...) تكتب أصلاً بهذه المجموعة عبر دالة
+//    createNotification() الموجودة بكودك — بدون أي تعديل منّا.
+//    البوت فقط يقرأ كل مستند جديد يُضاف هنا، ويحوّله لرسالة تيليجرام
+//    لنفس صاحب الحساب إن كان قد ربط حسابه.
+// ============================================================
+db.collection('notifications').onSnapshot(
+  (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type !== 'added') return;
+
+      const data = change.doc.data();
+      const createdAtMs = data.createdAt ? new Date(data.createdAt).getTime() : 0;
+
+      // تجاهل أي إشعار قديم (موجود من قبل تشغيل البوت) لتفادي إرسال
+      // دفعة ضخمة من الرسائل القديمة عند كل إعادة تشغيل على Railway
+      if (!createdAtMs || createdAtMs < BOOT_TIME) return;
+
+      const target = data.userId as string | undefined; // غالبًا رقم الهاتف، أو 'admin'
+      const message = data.message as string | undefined;
+      if (!target || !message) return;
+
+      // 'admin' ليس رقم هاتف — لا يوجد مستند مستخدم مطابق له، فيُتجاهل
+      // تلقائيًا بأمان (لا يوجد telegramChatId لإرساله إليه).
+      try {
+        const userSnap = await db.collection('users').doc(target).get();
+        if (!userSnap.exists) return;
+        const chatId = userSnap.data()?.telegramChatId;
+        if (!chatId) return; // العضو لسا ما ربط حسابه بتيليجرام
+
+        await bot.telegram.sendMessage(chatId, `${message}${OXLO_SIGNATURE}`);
+      } catch (err) {
+        console.error('فشل إرسال إشعار تيليجرام:', err);
+      }
+    });
+  },
+  (err) => console.error('notifications listener error:', err)
+);
+
+bot.launch().then(() => {
+  console.log('🤖 OXLO Notify Bot يعمل الآن...');
+});
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
