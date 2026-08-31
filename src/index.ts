@@ -86,16 +86,41 @@ bot.start(async (ctx) => {
     return;
   }
 
-  const phone = `+${payload.replace(/\D/g, '')}`;
+  // نجرّب كل الصيغ المحتملة لرقم الهاتف — بعض الحسابات مخزّنة بالصيغة
+  // الدولية (+964...) وأخرى بالصيغة المحلية (07...)، فالبحث بصيغة واحدة
+  // كان يفشل مع جزء من الأعضاء ويظهر لهم "لم يتم العثور على حساب".
+  const digits = payload.replace(/\D/g, '');
+  const noZero = digits.replace(/^0+/, '');
+  const candidates = Array.from(new Set([
+    `+${digits}`,
+    digits,
+    noZero,
+    `+${noZero}`,
+    noZero.startsWith('964') ? `0${noZero.slice(3)}` : `0${noZero}`,
+    noZero.startsWith('964') ? noZero.slice(3) : `964${noZero}`,
+    noZero.startsWith('964') ? `+${noZero}` : `+964${noZero}`,
+  ].filter(Boolean)));
 
   try {
-    const userRef = db.collection('users').doc(phone);
-    const userSnap = await userRef.get();
+    let userRef: FirebaseFirestore.DocumentReference | null = null;
+    let userSnap: FirebaseFirestore.DocumentSnapshot | null = null;
 
-    if (!userSnap.exists) {
+    for (const id of candidates) {
+      const ref = db.collection('users').doc(id);
+      const snap = await ref.get();
+      if (snap.exists) {
+        userRef = ref;
+        userSnap = snap;
+        break;
+      }
+    }
+
+    if (!userRef || !userSnap) {
       await ctx.reply('⚠️ لم يتم العثور على حساب مطابق. تأكد أنك فتحت هذا الرابط من داخل تطبيق OXLO مباشرة.');
       return;
     }
+
+    const phone = userRef.id;
 
     // التعديل الوحيد الذي يلمسه هذا البوت على قاعدة بياناتك:
     // حقل telegramChatId (وحقلين مساعدين اختياريين) داخل مستند
