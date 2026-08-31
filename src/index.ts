@@ -350,8 +350,23 @@ db.collection('notifications').onSnapshot(
       const message = data.message as string | undefined;
       if (!target || !message) return;
 
-      // 'admin' ليس رقم هاتف — لا يوجد مستند مستخدم مطابق له، فيُتجاهل
-      // تلقائيًا بأمان (لا يوجد telegramChatId لإرساله إليه).
+      // إشعارات الإدارة: تُرسل مباشرة لحساب المدير على تيليجرام.
+      // 'admin' ليس رقم هاتف ولا يقابله مستند مستخدم، لذا نتعامل معه
+      // بشكل منفصل قبل محاولة البحث في مجموعة users.
+      if (target === 'admin') {
+        if (!ADMIN_TELEGRAM_ID) return;
+        try {
+          await bot.telegram.sendMessage(
+            ADMIN_TELEGRAM_ID,
+            `${message}${OXLO_SIGNATURE}`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (err) {
+          console.error('فشل إرسال إشعار الإدارة:', err);
+        }
+        return;
+      }
+
       try {
         const userSnap = await db.collection('users').doc(target).get();
         if (!userSnap.exists) return;
